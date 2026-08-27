@@ -180,6 +180,7 @@ export {
   discoverPaymentPaths,
   clearPathDiscoveryCache,
   DEFAULT_PATH_DISCOVERY_CACHE_TTL_MS,
+  buildOptimizedSplitPaymentPlan,
 } from "./pathPayment";
 export type {
   DiscoveredPaymentPath,
@@ -191,6 +192,10 @@ export type {
   SwapRouteAsset,
   FindSwapPathOptions,
   BuildPathPaymentParams,
+  PaymentRouteQuote,
+  SplitPaymentLeg,
+  SplitPaymentPlan,
+  SplitPaymentOptions,
 } from "./pathPayment";
 export type {
   TransactionStreamConfig,

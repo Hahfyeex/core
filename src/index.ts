@@ -278,6 +278,7 @@ export {
   discoverPaymentPaths,
   clearPathDiscoveryCache,
   DEFAULT_PATH_DISCOVERY_CACHE_TTL_MS,
+  buildOptimizedSplitPaymentPlan,
 } from "./transaction/pathPayment";
 export type {
   SwapRoute,
@@ -287,6 +288,10 @@ export type {
   DiscoveredPaymentPath,
   PaymentPathDiscoveryResult,
   DiscoverPaymentPathsOptions,
+  PaymentRouteQuote,
+  SplitPaymentLeg,
+  SplitPaymentPlan,
+  SplitPaymentOptions,
 } from "./transaction/pathPayment";
 export { streamTransactions } from "./transaction/streamTransactions";
 export {
@@ -572,6 +577,37 @@ export type {
   IndexedEventQueryResult,
 } from "./soroban/eventIndex";
 export { analyzeCallOptimization } from "./soroban/callOptimization";
+export {
+  captureContractState,
+  snapshotContractState,
+  diffContractState,
+  diffSnapshots,
+  inspectContractInvocation,
+} from "./soroban/stateSnapshots";
+export type {
+  ContractStateEntry,
+  ContractStateSnapshot,
+  ContractStateChange,
+  ContractStateDiff,
+  ContractStateReader,
+} from "./soroban/stateSnapshots";
+export { optimizeContractArgs, analyzeArgumentEncoding } from "./soroban/optimizeArgs";
+export type { ArgumentEncodingStats, OptimizedContractArgs } from "./soroban/optimizeArgs";
+export {
+  createClaimCommitment,
+  createProofEnvelope,
+  verifyProof,
+  validatePrivateTransaction,
+} from "./privacy/zeroKnowledge";
+export type {
+  ProofBytes,
+  ProofStatement,
+  SelectiveDisclosure,
+  ZeroKnowledgeProof,
+  ProofVerificationContext,
+  ZeroKnowledgeVerifier,
+  PrivateTransactionValidationResult,
+} from "./privacy/zeroKnowledge";
 export type {
   CallOptimizationReport,
   CallOptimizationSuggestion,

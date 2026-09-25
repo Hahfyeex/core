@@ -4,3 +4,4 @@ export { LobstrAdapter } from "./lobstr";
 export { HanaAdapter } from "./hana";
 export { WalletConnectAdapter } from "./walletconnect";
 export type { WalletConnectAdapterConfig } from "./walletconnect";
+export { AlbedoAdapter } from "./albedo";

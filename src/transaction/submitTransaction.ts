@@ -21,6 +21,60 @@ const horizonCircuitBreaker = new CircuitBreakerRegistry({
   recoveryWindowMs: 30_000,
 });
 
+// ── #569: XDR Replay Protection ───────────────────────────────────────────────
+//
+// In-process registry of successfully-submitted transaction hashes.
+// Keyed by "<horizonUrl>|<txHash>" so separate networks are independent.
+// Entries are stored with their submission timestamp so callers can detect
+// how long ago the duplicate was submitted.
+//
+// This covers the most dangerous case: the same signed XDR being re-submitted
+// within the same process lifetime (e.g. a double-click, a retry loop that
+// fires before the previous call resolves, or a copied XDR being reused).
+// Cross-process and cross-session protection is enforced by Horizon's
+// sequence-number ledger rules — this layer is a fast client-side guard.
+
+interface ReplayRecord {
+  submittedAt: number;   // Unix ms
+  hash: string;
+}
+
+const _submittedHashes = new Map<string, ReplayRecord>();
+
+/** Key used to namespace replay entries per Horizon endpoint. */
+function replayKey(horizonUrl: string, txHash: string): string {
+  return `${horizonUrl}|${txHash}`;
+}
+
+/**
+ * Register a transaction hash as successfully submitted.
+ * Automatically prunes entries older than `ttlMs` on every write to keep
+ * memory bounded. Defaults to 5 minutes, which is well past Stellar's
+ * transaction timeout window.
+ */
+function registerSubmitted(horizonUrl: string, txHash: string, ttlMs = 300_000): void {
+  const now = Date.now();
+  // Prune stale entries before inserting
+  for (const [key, record] of _submittedHashes) {
+    if (now - record.submittedAt > ttlMs) _submittedHashes.delete(key);
+  }
+  _submittedHashes.set(replayKey(horizonUrl, txHash), { submittedAt: now, hash: txHash });
+}
+
+/**
+ * Returns the replay record for a previously-submitted hash, or undefined
+ * when no match is found (or the entry has expired).
+ */
+function getReplayRecord(horizonUrl: string, txHash: string, ttlMs = 300_000): ReplayRecord | undefined {
+  const record = _submittedHashes.get(replayKey(horizonUrl, txHash));
+  if (!record) return undefined;
+  if (Date.now() - record.submittedAt > ttlMs) {
+    _submittedHashes.delete(replayKey(horizonUrl, txHash));
+    return undefined;
+  }
+  return record;
+}
+
 function describeSubmissionFailure(cause: unknown): string {
   if (isXdrInvalidError(cause)) {
     return `Transaction submission failed because the signed XDR is malformed: ${toMessage(cause)}`;
@@ -142,6 +196,24 @@ export async function submitTransaction(
       );
     }
 
+    // ── #569: XDR Replay Protection ───────────────────────────────────────────
+    // Reject duplicate XDR submissions within the same process lifetime.
+    // This guards against double-clicks, retry loops, and copied XDRs being
+    // reused — catastrophic for payment operations.
+    if (txHash) {
+      const duplicate = getReplayRecord(horizonUrl, txHash);
+      if (duplicate) {
+        const ageSeconds = Math.round((Date.now() - duplicate.submittedAt) / 1000);
+        return err(
+          SorokitErrorCode.TX_SUBMIT_FAILED,
+          `Replay protection: this transaction (hash: ${txHash}) was already ` +
+            `submitted to this network ${ageSeconds}s ago. ` +
+            `Resubmitting the same signed XDR would create a duplicate transaction. ` +
+            `Build and sign a new transaction if you want to retry the operation.`,
+        );
+      }
+    }
+
     const response = await horizonCircuitBreaker.call(horizonUrl, async () => {
       return await retryWithBackoff(async () => {
         const server = createHorizonServer(horizonUrl, options);
@@ -160,6 +232,10 @@ export async function submitTransaction(
     if (cache) {
       cache.set(`tx:${response.hash}`, result, DEFAULT_TX_CACHE_TTL_MS);
     }
+
+    // Register in the replay-protection registry so the same XDR cannot be
+    // submitted again within the TTL window.
+    registerSubmitted(horizonUrl, response.hash);
 
     // Horizon's synchronous submit returns after ledger inclusion, so a
     // success is both "submitted" and "confirmed". Fire-and-forget: webhook

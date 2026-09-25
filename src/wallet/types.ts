@@ -14,6 +14,7 @@ export enum WalletType {
   HANA = "HANA",
   RABET = "RABET",
   WALLETCONNECT = "WALLETCONNECT",
+  ALBEDO = "ALBEDO",
 }
 
 export interface WalletState {

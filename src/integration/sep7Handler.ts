@@ -330,23 +330,55 @@ export function parseSep7Uri(uri: string): SorokitResult<Sep7Params> {
   }
 }
 
-// ─── URI Validator ─────────────────────────────────────────────────────────────
+// ─── Parameter Validation ──────────────────────────────────────────────────────
+
+/** Maximum number of decimal places allowed in a Stellar amount string. */
+const STELLAR_MAX_DECIMAL_PLACES = 7;
+
+/** Maximum representable Stellar amount, expressed in decimal units (int64 stroops). */
+const MAX_STELLAR_AMOUNT = 922337203685.4775807;
+
+/** Maximum byte length of a MEMO_TEXT value on Stellar. */
+const STELLAR_MEMO_TEXT_MAX_BYTES = 28;
 
 /**
- * Validates a SEP-7 URI string and returns detailed diagnostic messages.
+ * Validate that a Stellar amount string is a positive decimal with at most 7
+ * decimal places that does not exceed the maximum int64-stroop value. Returns an
+ * error message when the value is invalid, or `undefined` when it is acceptable.
+ *
+ * The SDK enforces precise bounds at transaction-build time; this guard rejects
+ * malformed or out-of-range amounts early (before constructing operations),
+ * which is essential for untrusted SEP-7 link input (#782).
  */
-export function validateSep7Uri(uri: string): SorokitResult<Sep7ValidationResult> {
-  const parseResult = parseSep7Uri(uri);
-  if (parseResult.status !== "ok") {
-    return ok({
-      valid: false,
-      operation: "pay",
-      errors: [parseResult.error.message],
-      warnings: [],
-    });
+function validateStellarAmount(value: string | undefined, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^\d+(\.\d+)?$/.test(value)) {
+    return `Invalid ${field}: '${value}' must be a positive decimal number`;
   }
+  const dotIndex = value.indexOf(".");
+  if (dotIndex !== -1 && value.length - dotIndex - 1 > STELLAR_MAX_DECIMAL_PLACES) {
+    return `Invalid ${field}: '${value}' exceeds ${STELLAR_MAX_DECIMAL_PLACES} decimal places`;
+  }
+  const numeric = parseFloat(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return `Invalid ${field}: '${value}' must be a positive number`;
+  }
+  if (numeric > MAX_STELLAR_AMOUNT) {
+    return `Invalid ${field}: '${value}' exceeds the maximum allowed Stellar amount`;
+  }
+  return undefined;
+}
 
-  const params = parseResult.data;
+/**
+ * Validate parsed SEP-7 parameters and return the accumulated errors and
+ * warnings. This is the single source of truth for SEP-7 parameter validation,
+ * shared by {@link validateSep7Uri} (diagnostics) and {@link buildFromSep7Uri}
+ * (enforcement) so that an untrusted link can never silently produce a
+ * transaction that bypasses validation (#782).
+ */
+export function validateSep7Params(
+  params: Sep7Params,
+): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -373,12 +405,8 @@ export function validateSep7Uri(uri: string): SorokitResult<Sep7ValidationResult
       if (!isValidPublicKey(params.destination) && !StrKey.isValidMed25519PublicKey(params.destination)) {
         errors.push(`Invalid destination Stellar address: '${params.destination}'`);
       }
-      if (params.amount !== undefined) {
-        const amt = parseFloat(params.amount);
-        if (isNaN(amt) || amt <= 0) {
-          errors.push(`Invalid amount: '${params.amount}' must be a positive number`);
-        }
-      }
+      const amountError = validateStellarAmount(params.amount, "amount");
+      if (amountError) errors.push(amountError);
       if (params.asset_code) {
         if (!/^[a-zA-Z0-9]{1,12}$/.test(params.asset_code)) {
           errors.push(`Invalid asset_code: '${params.asset_code}' must be 1-12 alphanumeric characters`);
@@ -392,8 +420,11 @@ export function validateSep7Uri(uri: string): SorokitResult<Sep7ValidationResult
         errors.push("Asset issuer specified without 'asset_code'");
       }
 
-      if (params.memo && params.memo_type) {
-        const mType = params.memo_type.toUpperCase();
+      // Memo validation. When memo_type is omitted the SDK treats the memo as
+      // MEMO_TEXT when building the transaction, so enforce the text byte limit
+      // in that case as well to prevent oversized memo injection (#782).
+      if (params.memo) {
+        const mType = (params.memo_type ?? "text").toUpperCase();
         if (mType === "ID" || mType === "MEMO_ID") {
           if (!/^\d+$/.test(params.memo)) {
             errors.push(`Memo ID must be a positive 64-bit integer, got: '${params.memo}'`);
@@ -401,6 +432,10 @@ export function validateSep7Uri(uri: string): SorokitResult<Sep7ValidationResult
         } else if (mType === "HASH" || mType === "MEMO_HASH" || mType === "RETURN" || mType === "MEMO_RETURN") {
           if (!/^[0-9a-fA-F]{64}$/.test(params.memo) && Buffer.from(params.memo, "base64").length !== 32) {
             errors.push(`Memo ${mType} must be a 32-byte hex or base64 string`);
+          }
+        } else {
+          if (Buffer.byteLength(params.memo, "utf8") > STELLAR_MEMO_TEXT_MAX_BYTES) {
+            errors.push(`Memo text exceeds the ${STELLAR_MEMO_TEXT_MAX_BYTES}-byte maximum length`);
           }
         }
       }
@@ -459,6 +494,28 @@ export function validateSep7Uri(uri: string): SorokitResult<Sep7ValidationResult
     }
   }
 
+  return { errors, warnings };
+}
+
+// ─── URI Validator ─────────────────────────────────────────────────────────────
+
+/**
+ * Validates a SEP-7 URI string and returns detailed diagnostic messages.
+ */
+export function validateSep7Uri(uri: string): SorokitResult<Sep7ValidationResult> {
+  const parseResult = parseSep7Uri(uri);
+  if (parseResult.status !== "ok") {
+    return ok({
+      valid: false,
+      operation: "pay",
+      errors: [parseResult.error.message],
+      warnings: [],
+    });
+  }
+
+  const params = parseResult.data;
+  const { errors, warnings } = validateSep7Params(params);
+
   return ok({
     valid: errors.length === 0,
     operation: params.operation,
@@ -483,10 +540,21 @@ export async function buildFromSep7Uri(
   }
 
   const params = parseResult.data;
+
+  // Enforce parameter validation before constructing any transaction so that
+  // untrusted SEP-7 links cannot inject out-of-bounds transaction modifications (#782).
+  const { errors: validationErrors } = validateSep7Params(params);
+  if (validationErrors.length > 0) {
+    return err(
+      SorokitErrorCode.VALIDATION,
+      `Invalid SEP-7 URI: ${validationErrors.join("; ")}`,
+    );
+  }
+
   const networkPassphrase =
     params.network_passphrase ?? options.networkPassphrase ?? Networks.TESTNET;
 
-    if (params.operation === "tx") {
+  if (params.operation === "tx") {
     try {
       const tx = TransactionBuilder.fromXDR(params.xdr, networkPassphrase);
       return ok(tx);

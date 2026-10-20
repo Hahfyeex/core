@@ -30,6 +30,45 @@ export const DEFAULT_STELLAR_TOML_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const tomlCache = new Map<string, { data: StellarToml; expiresAt: number }>();
 
+/**
+ * Minimum interval between automatic cache sweeps. A sweep removes every
+ * expired entry from {@link tomlCache} so stale TOML documents do not linger
+ * even when their domain is never requested again (#764).
+ */
+export const DEFAULT_STELLAR_TOML_SWEEP_INTERVAL_MS = 60_000;
+
+let lastSweepAt = 0;
+
+/**
+ * Remove expired entries from the TOML cache. Runs at most once per
+ * {@link DEFAULT_STELLAR_TOML_SWEEP_INTERVAL_MS} so the amortized cost of
+ * automatic expiration stays near zero. Pass `force = true` to bypass the
+ * throttle (used by {@link sweepStellarTomlCache}).
+ */
+function sweepExpiredEntries(force = false): number {
+  const now = Date.now();
+  if (!force && now - lastSweepAt < DEFAULT_STELLAR_TOML_SWEEP_INTERVAL_MS) {
+    return 0;
+  }
+  lastSweepAt = now;
+  let removed = 0;
+  for (const [key, entry] of tomlCache) {
+    if (entry.expiresAt <= now) {
+      tomlCache.delete(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/**
+ * Number of entries currently held in the TOML cache (expired or not). Useful
+ * for diagnostics and for verifying automatic eviction (#764).
+ */
+export function getStellarTomlCacheSize(): number {
+  return tomlCache.size;
+}
+
 function domainUrl(domain: string): URL | null {
   if (typeof domain !== "string" || !domain.trim()) return null;
   try {
@@ -66,6 +105,11 @@ function normalizeStellarToml(fields: Record<string, unknown>): StellarToml {
 }
 
 export function getCachedStellarToml(domain: string): StellarToml | undefined {
+  // Opportunistically evict expired entries so stale TOML is purged
+  // automatically without waiting for natural TTL expiry or an explicit
+  // clearStellarTomlCache() call (#764).
+  sweepExpiredEntries();
+
   const url = domainUrl(domain);
   if (!url) return undefined;
 
@@ -83,6 +127,8 @@ export function cacheStellarToml(
 ): void {
   const url = domainUrl(domain);
   if (!url || !Number.isFinite(ttlMs) || ttlMs <= 0) return;
+  // Evict expired entries opportunistically on write as well (#764).
+  sweepExpiredEntries();
   tomlCache.set(url.origin.toLowerCase(), {
     data: normalizeStellarToml(data),
     expiresAt: Date.now() + ttlMs,
@@ -149,10 +195,22 @@ export async function fetchStellarToml(
   }
 }
 
+/**
+ * Immediately remove every expired entry from the TOML cache and return the
+ * number of entries evicted. Unlike the throttled automatic sweep performed on
+ * cache access, this always runs. Useful for long-running services that want
+ * deterministic cleanup without clearing the whole cache (#764).
+ */
+export function sweepStellarTomlCache(): number {
+  return sweepExpiredEntries(true);
+}
+
 /** Clear all cached stellar.toml documents, or only one domain's entry. */
 export function clearStellarTomlCache(domain?: string): void {
   if (domain === undefined) {
     tomlCache.clear();
+    // Reset the sweep throttle so the next access performs a fresh sweep.
+    lastSweepAt = 0;
     return;
   }
   const url = domainUrl(domain);

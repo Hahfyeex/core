@@ -77,7 +77,10 @@ export type {
 export {
   clearStellarTomlCache,
   fetchStellarToml,
+  sweepStellarTomlCache,
+  getStellarTomlCacheSize,
   DEFAULT_STELLAR_TOML_CACHE_TTL_MS,
+  DEFAULT_STELLAR_TOML_SWEEP_INTERVAL_MS,
 } from "./sep1Toml";
 export type { FetchStellarTomlOptions, StellarToml } from "./sep1Toml";
 export {
@@ -92,11 +95,21 @@ export {
   trackTransaction,
 } from "./sep6Flow";
 export type { Sep6FlowAsset, Sep6FlowRequestOptions } from "./sep6Flow";
-export { getKycFields, submitKycInfo, getKycStatus } from "./sep12Kyc";
+export {
+  getKycFields,
+  submitKycInfo,
+  getKycStatus,
+  sep12KycCollect,
+  validateSep12MimeType,
+  validateSep12Upload,
+  SEP12_ALLOWED_MIME_TYPES,
+} from "./sep12Kyc";
 export type {
   KycFieldDefinition,
   KycSubmissionInfo,
   KycRequestOptions,
+  Sep12KycFile,
+  Sep12KycCollectOptions,
 } from "./sep12Kyc";
 export {
   initiateInteractiveDeposit,
